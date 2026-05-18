@@ -6,12 +6,14 @@ package {{package}}
 
 import android.annotation.SuppressLint
 import android.app.Activity
+import android.content.Context
 import android.content.Intent
 import android.graphics.drawable.ColorDrawable
 import android.os.Build
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.view.inputmethod.InputMethodManager
 import android.webkit.WebView
 import android.widget.FrameLayout
 import android.widget.PopupWindow
@@ -177,6 +179,15 @@ class WryActivity(val host: Activity) {
             mPopups[key] = popup
 
             view.requestFocus()
+
+            // Hide the soft keyboard left over from whatever view held
+            // focus before this mount. The previous owner (a host-side
+            // text editor, terminal pane, etc.) may have raised the IME
+            // and `requestFocus` on the WebView alone does not dismiss
+            // it. If the WebView's own content later focuses an `<input>`
+            // the IME comes back up by itself.
+            val imm = host.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
+            imm?.hideSoftInputFromWindow(host.window.decorView.windowToken, 0)
         }
     }
 
@@ -210,6 +221,15 @@ class WryActivity(val host: Activity) {
     // entire webview content vanishing after a single hide → show
     // cycle. Use `contentView.visibility = GONE` instead to keep the
     // `PopupWindow` alive across visibility toggles.
+    //
+    // `contentView.visibility = GONE` alone is not enough on Android:
+    // PopupWindow registers as its own window with WindowManager and
+    // — while `isTouchable = true` — keeps capturing touches in its
+    // anchored bounds even when the content view is GONE. The host
+    // window (NativeActivity, here driving egui) then receives no
+    // input and looks frozen. Toggle `isTouchable` together with
+    // visibility so hidden popups let touches fall through to the
+    // window below.
     fun setChildVisible(view: View, visible: Boolean) {
         host.runOnUiThread {
             val key = view.hashCode()
@@ -218,6 +238,11 @@ class WryActivity(val host: Activity) {
             mLastVisible[key] = visible
             val content = popup.contentView ?: return@runOnUiThread
             content.visibility = if (visible) View.VISIBLE else View.GONE
+            popup.isTouchable = visible
+            // `update()` is required for `isTouchable` to actually take
+            // effect on a showing PopupWindow — the flag is consulted at
+            // window-attach time and re-applied on update.
+            popup.update()
         }
     }
 
