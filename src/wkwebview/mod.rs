@@ -39,9 +39,10 @@ use objc2::{
 };
 #[cfg(target_os = "macos")]
 use objc2_app_kit::{NSApplication, NSAutoresizingMaskOptions, NSTitlebarSeparatorStyle, NSView};
-#[cfg(target_os = "macos")]
-use objc2_core_foundation::CGSize;
-use objc2_core_foundation::{CGPoint, CGRect};
+// `CGSize` is required by both the macOS `setFrame` path and the iOS
+// child `set_bounds` branch (child WKWebView resize). Lift the gate so
+// it's available on iOS too.
+use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use objc2_foundation::{
   ns_string, MainThreadMarker, NSArray, NSBundle, NSDate, NSError, NSHTTPCookie,
   NSHTTPCookieDomain, NSHTTPCookieExpires, NSHTTPCookieMaximumAge, NSHTTPCookieName,
@@ -446,7 +447,27 @@ impl InnerWebView {
       };
       #[cfg(target_os = "ios")]
       let webview = {
-        let frame = ns_view.frame();
+        // Child mode (`build_as_child`) uses caller-provided logical
+        // bounds so the WKWebView is sized to the embedding region,
+        // not the entire parent UIView. UIKit `setFrame:` takes points
+        // (logical px); `to_logical::<f64>(1.0)` round-trips values
+        // that are already logical. Non-child mode keeps the legacy
+        // behaviour of filling the parent.
+        let frame = if is_child {
+          attributes
+            .bounds
+            .map(|b| {
+              let (x, y): (f64, f64) = b.position.to_logical::<f64>(1.0).into();
+              let (w, h): (f64, f64) = b.size.to_logical::<f64>(1.0).into();
+              CGRect {
+                origin: CGPoint::new(x, y),
+                size: CGSize::new(w, h),
+              }
+            })
+            .unwrap_or_else(|| ns_view.frame())
+        } else {
+          ns_view.frame()
+        };
         let webview: Retained<WryWebView> =
           objc2::msg_send![super(webview), initWithFrame: frame, configuration: &**config];
         if let Some((red, green, blue, alpha)) = attributes.background_color {
@@ -518,9 +539,20 @@ impl InnerWebView {
       }
       #[cfg(target_os = "ios")]
       {
-        webview.setAutoresizingMask(
-          UIViewAutoresizing::FlexibleWidth | UIViewAutoresizing::FlexibleHeight,
-        );
+        // Non-child mode (legacy full-window webview) keeps the
+        // flexible autoresizing mask so it tracks parent UIView
+        // resizes. Child mode (webview embedded in a host-managed
+        // region) must NOT autoresize — the host drives `set_bounds`
+        // with the embedding rect every frame; a flexible mask would
+        // otherwise stretch the webview back to parent bounds and
+        // full-screen it.
+        if is_child {
+          webview.setAutoresizingMask(UIViewAutoresizing::None);
+        } else {
+          webview.setAutoresizingMask(
+            UIViewAutoresizing::FlexibleWidth | UIViewAutoresizing::FlexibleHeight,
+          );
+        }
 
         // disable scroll bounce by default
         // https://developer.apple.com/documentation/webkit/wkwebview/1614784-scrollview?language=objc
@@ -1023,6 +1055,25 @@ r#"Object.defineProperty(window, 'ipc', {
         };
         self.webview.setFrame(frame);
       }
+    }
+
+    // iOS UIView coordinates are top-left origin (unlike macOS
+    // NSView's bottom-left), so no Y-axis flip is required. UIKit uses
+    // points (logical pixels) for `setFrame:`; the public `Rect` API
+    // carries logical bounds, so a `to_logical` with scale=1.0
+    // round-trips the value unchanged regardless of the device's
+    // actual backing scale (Retina ×2 / ×3). Without this branch the
+    // WKWebView keeps the parent UIView frame and fills the entire
+    // window, ignoring the caller-supplied rect.
+    #[cfg(target_os = "ios")]
+    if self.is_child {
+      let (x, y): (f64, f64) = bounds.position.to_logical::<f64>(1.0).into();
+      let (width, height): (f64, f64) = bounds.size.to_logical::<f64>(1.0).into();
+      let frame = CGRect {
+        origin: CGPoint::new(x, y),
+        size: CGSize::new(width.max(1.0), height.max(1.0)),
+      };
+      self.webview.setFrame(frame);
     }
 
     Ok(())
