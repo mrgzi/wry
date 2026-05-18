@@ -360,7 +360,9 @@ mod web_context;
 #[cfg(target_os = "android")]
 pub(crate) mod android;
 #[cfg(target_os = "android")]
-pub use crate::android::android_setup;
+pub use crate::android::{
+  android_setup, wire_main_pipe_on_ui_thread as android_wire_main_pipe_on_ui_thread,
+};
 #[cfg(target_os = "android")]
 pub mod prelude {
   pub use crate::android::{binding::*, dispatch, find_class, Context};

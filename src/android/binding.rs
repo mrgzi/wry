@@ -273,8 +273,11 @@ pub unsafe fn wryCreate(env: JNIEnv, _: JClass) {
 
 #[allow(non_snake_case)]
 pub unsafe fn onWebviewDestroy(mut env: JNIEnv, _: JClass, activity: JObject, webview_id: JString) {
+  // `WryActivity` no longer extends `Activity`, so there's no inherited
+  // `getId(): Int`. We override `hashCode()` to return the host
+  // activity's identity hash and key `ACTIVITY_PROXY` by that instead.
   let activity_id = env
-    .call_method(&activity, "getId", "()I", &[])
+    .call_method(&activity, "hashCode", "()I", &[])
     .unwrap()
     .i()
     .unwrap();

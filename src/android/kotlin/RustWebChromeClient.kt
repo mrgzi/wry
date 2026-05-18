@@ -31,7 +31,13 @@ import java.io.IOException
 import java.text.SimpleDateFormat
 import java.util.*
 
-class RustWebChromeClient(appActivity: WryActivity) : WebChromeClient() {
+// Constructor takes `android.app.Activity` rather than a `WryActivity`
+// subclass. Hosts using a non-`ComponentActivity` base (e.g.
+// `NativeActivity` shipped by `android-activity`) cannot register
+// activity-result launchers, so the file-picker / camera-capture
+// callbacks fall back to no-ops. Plain WebView content (HTML, JS,
+// network) still works.
+class RustWebChromeClient(appActivity: Activity) : WebChromeClient() {
   private interface PermissionListener {
     fun onPermissionSelect(isGranted: Boolean?)
   }
@@ -40,32 +46,40 @@ class RustWebChromeClient(appActivity: WryActivity) : WebChromeClient() {
     fun onActivityResult(result: ActivityResult?)
   }
 
-  private val activity: WryActivity
-  private var permissionLauncher: ActivityResultLauncher<Array<String>>
-  private var activityLauncher: ActivityResultLauncher<Intent>
+  private val activity: Activity
+  private val permissionLauncher: ActivityResultLauncher<Array<String>>?
+  private val activityLauncher: ActivityResultLauncher<Intent>?
   private var permissionListener: PermissionListener? = null
   private var activityListener: ActivityResultListener? = null
 
   init {
     activity = appActivity
-    val permissionCallback =
-      ActivityResultCallback { isGranted: Map<String, Boolean> ->
-        if (permissionListener != null) {
-          var granted = true
-          for ((_, value) in isGranted) {
-            if (!value) granted = false
+    val component = appActivity as? androidx.activity.ComponentActivity
+    if (component != null) {
+      val permissionCallback =
+        ActivityResultCallback { isGranted: Map<String, Boolean> ->
+          if (permissionListener != null) {
+            var granted = true
+            for ((_, value) in isGranted) {
+              if (!value) granted = false
+            }
+            permissionListener!!.onPermissionSelect(granted)
           }
-          permissionListener!!.onPermissionSelect(granted)
+        }
+      permissionLauncher = component.registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions(),
+        permissionCallback
+      )
+      activityLauncher = component.registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+      ) { result ->
+        if (activityListener != null) {
+          activityListener!!.onActivityResult(result)
         }
       }
-    permissionLauncher =
-      activity.registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions(), permissionCallback)
-    activityLauncher = activity.registerForActivityResult(
-      ActivityResultContracts.StartActivityForResult()
-    ) { result ->
-      if (activityListener != null) {
-        activityListener!!.onActivityResult(result)
-      }
+    } else {
+      permissionLauncher = null
+      activityLauncher = null
     }
   }
 
@@ -112,8 +126,24 @@ class RustWebChromeClient(appActivity: WryActivity) : WebChromeClient() {
           }
         }
       }
-      permissionLauncher.launch(permissions)
+      // Auto-grant security fix: when no `ActivityResultLauncher` is
+      // wired (NativeActivity / non-ComponentActivity hosts), upstream
+      // silently called `request.grant(...)` without ever prompting the
+      // user — meaning camera, microphone and other WebView resource
+      // permissions could be enabled without consent. Deny instead;
+      // hosts that *do* want to surface these prompts must provide a
+      // permission bridge through a ComponentActivity launcher.
+      val launcher = permissionLauncher
+      if (launcher != null) {
+        launcher.launch(permissions)
+      } else {
+        request.deny()
+      }
     } else {
+      // No dangerous permissions involved (or platform doesn't require
+      // a runtime prompt). The original WebView resource grant is safe
+      // here — these are non-dangerous categories like protected media
+      // ID where the OS already enforces device-level policy.
       request.grant(request.resources)
     }
   }
@@ -261,7 +291,7 @@ class RustWebChromeClient(appActivity: WryActivity) : WebChromeClient() {
           }
         }
       }
-      permissionLauncher.launch(geoPermissions)
+      permissionLauncher?.launch(geoPermissions) ?: callback.invoke(origin, false, false)
     } else {
       // permission is already granted
       callback.invoke(origin, true, false)
@@ -293,7 +323,7 @@ class RustWebChromeClient(appActivity: WryActivity) : WebChromeClient() {
           }
         }
         val camPermission = arrayOf(Manifest.permission.CAMERA)
-        permissionLauncher.launch(camPermission)
+        permissionLauncher?.launch(camPermission) ?: filePathCallback.onReceiveValue(null)
       }
     } else {
       showFilePicker(filePathCallback, fileChooserParams)
@@ -349,7 +379,7 @@ class RustWebChromeClient(appActivity: WryActivity) : WebChromeClient() {
         filePathCallback.onReceiveValue(res)
       }
     }
-    activityLauncher.launch(takePictureIntent)
+    activityLauncher?.launch(takePictureIntent) ?: return false
     return true
   }
 
@@ -367,7 +397,7 @@ class RustWebChromeClient(appActivity: WryActivity) : WebChromeClient() {
         filePathCallback.onReceiveValue(res)
       }
     }
-    activityLauncher.launch(takeVideoIntent)
+    activityLauncher?.launch(takeVideoIntent) ?: return false
     return true
   }
 
@@ -406,7 +436,7 @@ class RustWebChromeClient(appActivity: WryActivity) : WebChromeClient() {
           filePathCallback.onReceiveValue(res)
         }
       }
-      activityLauncher.launch(intent)
+      activityLauncher?.launch(intent) ?: filePathCallback.onReceiveValue(null)
     } catch (e: ActivityNotFoundException) {
       filePathCallback.onReceiveValue(null)
     }
