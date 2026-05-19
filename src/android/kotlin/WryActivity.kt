@@ -150,6 +150,14 @@ class WryActivity(val host: Activity) {
             // refuses content views that already have a parent.
             (view.parent as? ViewGroup)?.removeView(view)
             val container = FrameLayout(host)
+            // Force child views (the WebView) to be visually clipped to
+            // the container bounds. Without this the WebView can paint
+            // outside its layout rect when its inner HTML content has
+            // pre-resize width (the HTML viewport reflow lags one frame
+            // behind PopupWindow shrink), overflowing into a neighbour
+            // pane.
+            container.clipChildren = true
+            container.clipToPadding = true
             container.addView(
                 view,
                 FrameLayout.LayoutParams(
@@ -157,6 +165,10 @@ class WryActivity(val host: Activity) {
                     ViewGroup.LayoutParams.MATCH_PARENT
                 )
             )
+            // Also clip the WebView itself to its own outline — some
+            // OEM WebView implementations ignore parent clipping when
+            // their inner GL canvas is larger than the layout rect.
+            view.clipToOutline = true
 
             // `focusable=false` constructor — `true` makes the popup grab
             // input focus exclusively; tapping outside its bounds drops
@@ -171,7 +183,14 @@ class WryActivity(val host: Activity) {
             // skips popup re-measurement).
             popup.setBackgroundDrawable(ColorDrawable(0))
             popup.isOutsideTouchable = false
-            popup.isClippingEnabled = false
+            // Clip content to popup bounds: when the host resizes the
+            // pane and shrinks `popup.update(..., w, h)`, the WebView's
+            // HTML viewport does not always reflow fast enough; with
+            // clipping disabled (wry default) the WebView keeps painting
+            // its old viewport and overflows the pane separator into a
+            // neighbour pane. Clipping = true forces the popup to mask
+            // outside its own rect.
+            popup.isClippingEnabled = true
             popup.isTouchable = true
             // Disable default fade/scale so swaps don't blink.
             popup.animationStyle = 0
